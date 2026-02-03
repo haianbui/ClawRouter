@@ -1,7 +1,7 @@
 {
-  "name": "@blockrun/openclaw-x402",
+  "name": "@blockrun/openclaw",
   "version": "0.1.0",
-  "description": "Paid skills for OpenClaw — skill creators earn USDC, end users get premium capabilities via x402 micropayments",
+  "description": "LLM cost optimization for OpenClaw — one API key, 30+ models, smart routing, spend controls",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
