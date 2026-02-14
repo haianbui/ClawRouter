@@ -1,321 +1,285 @@
-# FreeRouter — Free, Self-Hosted AI Model Router (OpenRouter Alternative)
+# ClawRouter - Smart AI Model Router for Clawdbot
 
-<p align="center">
-  <img src="assets/logo.png" width="200" alt="FreeRouter Logo"/>
-</p>
+Route AI requests to the right model automatically based on complexity. Simple queries → cheap models (Haiku), complex queries → powerful models (Opus).
 
-**Route AI requests to the right model automatically — using your own API keys. No middleman, no markup, no payment layer.**
+**Saves 60-80% on API costs** by not using Opus for "Hello!"
 
-[![OpenClaw](https://img.shields.io/badge/Built%20for-OpenClaw-blue)](https://github.com/openclaw/openclaw)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+## Quick Start (For AI Agents)
 
-## The Problem
+If you're a Clawdbot agent setting this up from scratch, follow these steps in order:
 
-Services like [OpenRouter](https://openrouter.ai) solved a real problem: **smart model routing**. Instead of sending every request to one expensive model, they classify by complexity and route to the cheapest model that can handle it. Great approach — saves 60-80% on inference costs.
+### Step 1: Clone the Repo
 
-But if you already have your own API keys for Anthropic, OpenAI, Kimi, or other providers, **why pay a middleman?** You're already paying the providers directly. You just need the routing logic.
+```bash
+cd ~/clawd
+git clone git@github.com:haianbui/ClawRouter.git freerouter
+cd freerouter
+npm install
+npm run build
+```
 
-## The Solution
+### Step 2: Get OAuth Token
 
-**FreeRouter** gives you the same smart routing — **locally, for free, with your own keys.**
+```bash
+# Install Claude Code CLI if not present
+npm install -g @anthropic-ai/claude-code
 
-- ✅ Same 14-dimension complexity classifier
-- ✅ Automatic tier-based routing (simple → cheap model, complex → powerful model)
-- ✅ Your own API keys — no signup, no account, no usage fees
-- ✅ Self-hosted — runs on your machine, your data stays local
-- ✅ Works with any OpenAI-compatible API consumer
-- ❌ No payment layer, no crypto wallets, no token metering
+# Login (opens browser)
+claude login
 
-> **Forked from [BlockRunAI/ClawRouter](https://github.com/BlockRunAI/ClawRouter)** — we kept the excellent routing engine and stripped the x402 payment protocol. Credit to BlockRunAI for the original classifier design.
+# After login, get the token
+security find-generic-password -s "Claude Safe Storage" -w
+# Should return: sk-ant-oat01-...
+```
 
-## Who Is This For?
+### Step 3: Configure Environment
 
-- **OpenClaw users** who want automatic model routing without manual tier selection
-- **Developers with their own API keys** who don't want to pay OpenRouter's markup
-- **Self-hosters** who want model routing without sending data through third-party services
-- **Teams** who already pay for Anthropic/OpenAI and just need smart dispatching
-- **Anyone** who looked at OpenRouter's approach and thought "I want this, but with my own keys"
+Add to `~/.zshrc`:
+```bash
+export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-YOUR_TOKEN_HERE"
+```
+
+Then reload:
+```bash
+source ~/.zshrc
+```
+
+### Step 4: Configure Clawdbot
+
+Add FreeRouter as a provider in `~/.clawdbot/clawdbot.json`:
+
+```json
+{
+  "models": {
+    "providers": {
+      "freerouter": {
+        "baseUrl": "http://127.0.0.1:18800",
+        "apiKey": "freerouter-local",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "auto",
+            "name": "Smart Router",
+            "contextWindow": 200000,
+            "maxTokens": 8192,
+            "reasoning": false
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "freerouter/auto"
+      }
+    }
+  }
+}
+```
+
+### Step 5: Start FreeRouter
+
+```bash
+cd ~/clawd/freerouter
+source ~/.zshrc  # Load OAuth token
+node dist/server.js > /tmp/freerouter.log 2>&1 &
+```
+
+### Step 6: Verify
+
+```bash
+# Health check
+curl http://127.0.0.1:18800/health
+# Expected: {"status":"ok",...}
+
+# Test routing
+curl -s http://127.0.0.1:18800/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hi"}],"max_tokens":50}'
+# Should return a response from Haiku
+
+# Check stats
+curl http://127.0.0.1:18800/stats
+# Should show: "SIMPLE": 1, model: "claude-3-haiku-20240307"
+```
+
+### Step 7: Restart Clawdbot Gateway
+
+```bash
+clawdbot gateway restart
+```
+
+---
 
 ## How It Works
 
 ```
-Your App / OpenClaw → FreeRouter (:18800) → 14-dim Classifier → Route to best model
-                                                                   ├── Simple → Kimi K2.5 (cheap)
-                                                                   ├── Medium → Sonnet 4.5 (balanced)
-                                                                   ├── Complex → Opus 4.6 (powerful)
-                                                                   └── Reasoning → Opus 4.6 (max thinking)
+User → Clawdbot → FreeRouter (:18800) → Classifier → Route to:
+                                        ├── SIMPLE → Haiku (cheap, fast)
+                                        ├── MEDIUM → Sonnet (balanced)
+                                        ├── COMPLEX → Opus (powerful)
+                                        └── REASONING → Opus (max thinking)
 ```
 
-FreeRouter exposes a standard **OpenAI-compatible API** (`/v1/chat/completions`). Point any client at it — it classifies the request, picks the right model, forwards to the provider, and streams the response back. Your app sees one endpoint; FreeRouter handles the rest.
+### Tier Classification
 
-## Built for [OpenClaw](https://docs.openclaw.ai)
+| Tier | Examples | Model |
+|------|----------|-------|
+| SIMPLE | "Hi", "Thanks", "What's the weather?" | Haiku |
+| MEDIUM | "Write a function", "Debug this code" | Sonnet |
+| COMPLEX | "Design a microservice architecture" | Opus |
+| REASONING | "Prove this theorem step by step" | Opus |
 
-FreeRouter is designed as a drop-in provider for [OpenClaw](https://github.com/openclaw/openclaw), the open-source AI agent framework. OpenClaw sees one model (`freerouter/auto`), FreeRouter handles all routing transparently.
+### Quick Pattern Matching
 
-**But it's not OpenClaw-only** — any app that speaks the OpenAI API format can use it.
-
-## How Is This Different from ClawRouter?
-
-| | ClawRouter (BlockRunAI) | FreeRouter |
-|---|---|---|
-| **Routing engine** | ✅ 14-dimension classifier | ✅ Same engine, same scoring |
-| **Payment layer** | x402 protocol — crypto micropayments per API call | ❌ **Removed entirely** |
-| **Wallet integration** | Bitcoin/Lightning wallet required | ❌ **Removed** |
-| **API keys** | Managed through payment system | ✅ **Your own keys** — reads from OpenClaw's auth or env vars |
-| **Token metering** | Billed per-token via x402 | ❌ **Removed** — you pay providers directly |
-| **Multi-provider** | Single provider | ✅ **Anthropic + Kimi + any OpenAI-compatible** |
-| **Thinking injection** | Not included | ✅ **Auto-configures** thinking per model (Sonnet budget, Opus adaptive) |
-| **Fallback logic** | Not included | ✅ **Auto-retries** with fallback model on failure |
-| **Context-aware routing** | Current message only | ✅ **Last 3 messages** included in classification |
-| **OpenClaw integration** | Generic | ✅ **Native** — reads auth-profiles.json, works as drop-in provider |
-
-**In short:** Same brain, no paywall. You bring your own API keys, you control everything.
+FreeRouter uses fast regex patterns for instant classification:
+- Greetings → SIMPLE
+- Short messages (≤20 chars) → SIMPLE
+- Code requests → MEDIUM
+- Architecture terms → COMPLEX
+- Math/proof keywords → REASONING
 
 ---
 
-## What Is This?
+## Authentication
 
-FreeRouter is a transparent proxy that sits between OpenClaw and your AI providers. Instead of sending every message to one expensive model, it **classifies each message by complexity** and routes it to the right model automatically.
+### OAuth Token (Recommended)
 
-OpenClaw sees one model (`freerouter/auto`). Behind the scenes, FreeRouter picks the best backend:
+Uses Claude Code OAuth token, tied to your Claude Pro subscription:
 
+```bash
+# Get new token
+claude login
+
+# Token location: macOS Keychain "Claude Safe Storage"
+# Token format: sk-ant-oat01-...
+
+# Set in environment
+export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-..."
 ```
-User → OpenClaw Gateway → FreeRouter (:18800) → Classifier → Kimi K2.5 / Sonnet 4.5 / Opus 4.6
+
+### API Key (Alternative)
+
+Direct Anthropic API billing (pay-per-token):
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-api03-..."
 ```
 
-## Why?
+---
 
-- "Hello" doesn't need Opus. Kimi handles it for ~0 cost.
-- "Debug this race condition in my async pipeline" does need Opus.
-- You save 60-80% on API costs without sacrificing quality where it matters.
+## Endpoints
 
-## Tier System
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check + uptime |
+| `/stats` | GET | Request counts by tier/model |
+| `/v1/chat/completions` | POST | OpenAI-compatible chat |
+| `/v1/models` | GET | List available models |
+| `/reload` | POST | Reload auth keys |
 
-| Tier | When | Model | Thinking | Fallback |
-|------|------|-------|----------|----------|
-| SIMPLE | Greetings, factual questions, translations | Kimi K2.5 | none | Haiku 4.5 |
-| MEDIUM | Code help, conversation, tool use | Sonnet 4.5 | enabled (budget: 4096) | Opus 4.6 |
-| COMPLEX | Architecture, debugging, deep analysis | Opus 4.6 | adaptive | Sonnet 4.5 |
-| REASONING | Multi-step logic, math proofs, system design | Opus 4.6 | adaptive | Sonnet 4.5 |
+---
 
-**Bias toward upgrading.** If in doubt, it picks the higher tier. Overpay over under-deliver.
+## Troubleshooting
 
-## The 14-Dimension Classifier
+### "No Anthropic auth token" Error
 
-Each message is scored on 14 dimensions (0.0–1.0):
+```bash
+# Check if token is set
+echo $CLAUDE_CODE_OAUTH_TOKEN
 
-1. **tokenCount** — message length
-2. **vocabularyComplexity** — rare/technical words
-3. **syntaxComplexity** — nested clauses, conditionals
-4. **domainSpecificity** — specialized field knowledge needed
-5. **ambiguity** — how open-ended the request is
-6. **contextDependency** — needs prior conversation context
-7. **reasoningDepth** — logical steps required
-8. **creativityLevel** — original generation needed
-9. **emotionalComplexity** — nuance in tone/sentiment
-10. **multimodality** — references to images/files/links
-11. **instructionComplexity** — multi-step instructions
-12. **knowledgeRecency** — needs recent/current information
-13. **codeComplexity** — programming difficulty
-14. **mathematicalComplexity** — formal math/proofs
+# If empty, re-login
+claude login
 
-Scores are weighted and combined into a single complexity score. Tier boundaries:
-- `< 0.0` → SIMPLE (basically: short + simple vocabulary = cheap model)
-- `< 0.03` → MEDIUM
-- `< 0.15` → COMPLEX
-- `≥ 0.15` → REASONING
+# Then restart FreeRouter
+pkill -f "node dist/server"
+cd ~/clawd/freerouter && source ~/.zshrc && node dist/server.js &
+```
 
-### Context-Aware
+### All Requests Going to One Tier
 
-The classifier doesn't just look at the current message — it includes the **last 3 conversation messages** (truncated to 500 chars each). So if someone says "check this for me" after a long technical discussion, it inherits the complexity from context instead of being classified as SIMPLE.
+Check the logs:
+```bash
+tail -20 /tmp/freerouter.log
+```
 
-## What Was Stripped from ClawRouter
+Look for classification output like:
+```
+[INFO] Classified: tier=SIMPLE confidence=0.95 | quick-match: SIMPLE
+```
 
-These components from BlockRunAI's original were **removed entirely**:
+### FreeRouter Not Starting
 
-- **x402 payment protocol** — crypto micropayments per API call
-- **Wallet management** — Bitcoin/Lightning wallet integration
-- **Payment verification middleware** — transaction validation before routing
-- **Token metering for billing** — per-token usage tracking for payment
-- **Payment-related dependencies** — all crypto/wallet npm packages
+```bash
+# Check if port is in use
+lsof -i :18800
 
-## What Was Added
+# Kill existing process
+pkill -f "node dist/server"
 
-- `server.ts` — OpenAI-compatible HTTP proxy (zero external dependencies)
-- `provider.ts` — Multi-provider forwarding (Anthropic Messages API + Kimi/OpenAI) with SSE format translation
-- `auth.ts` — Reads OpenClaw's existing auth-profiles.json (no separate key management)
-- Fallback logic — if primary model fails, automatically retries with tier's fallback model
-- Context-aware classification — includes recent conversation history in scoring
-- Thinking parameter injection — automatically sets correct thinking config per model
+# Start fresh
+cd ~/clawd/freerouter
+npm run build
+node dist/server.js
+```
 
-## Source Code
+### OAuth Token Expired
+
+```bash
+# Re-authenticate
+claude login
+
+# Get new token and update ~/.zshrc
+security find-generic-password -s "Claude Safe Storage" -w
+```
+
+---
+
+## File Structure
 
 ```
 freerouter/
 ├── src/
-│   ├── server.ts        # HTTP server, OpenAI-compatible API
-│   ├── provider.ts      # Forwards to Anthropic/Kimi, translates SSE formats
-│   ├── auth.ts          # Reads OpenClaw's auth-profiles.json for API keys
-│   ├── logger.ts        # Request logging
+│   ├── auth.ts          # OAuth/API key loading
+│   ├── provider.ts      # Anthropic API forwarding
+│   ├── server.ts        # HTTP server
 │   └── router/
-│       ├── index.ts      # Main classifier logic (14 dimensions)
-│       ├── config.ts     # Tier mappings, model configs, scoring weights
-│       └── rules.ts      # Keyword-based overrides (e.g., "step by step" → REASONING)
-├── dist/                # Compiled JS (run `tsc` to build)
-├── tsconfig.json
+│       ├── rules.ts     # Quick pattern matching
+│       ├── config.ts    # Tier boundaries & models
+│       └── index.ts     # Classification logic
+├── dist/                # Compiled JS
 └── package.json
 ```
 
-## Setup Instructions
+---
 
-### 1. Get the Code
+## Key Improvements
 
-```bash
-git clone https://github.com/YOUR_USER/freerouter.git
-cd freerouter
-```
+This fork includes several improvements over the original FreeRouter:
 
-### 2. Install Dependencies & Build
-
-```bash
-npm install    # just typescript + @types/node
-npx tsc        # compiles to dist/
-```
-
-### 3. Configure Your Models
-
-Edit `src/router/config.ts` — set your tier→model mappings:
-
-```typescript
-export const TIER_MODELS = {
-  SIMPLE:    { model: 'kimi-for-coding', provider: 'kimi',      fallback: 'claude-haiku-4-5-20250315' },
-  MEDIUM:    { model: 'claude-sonnet-4-5-20250514', provider: 'anthropic', fallback: 'claude-opus-4-0-20250115' },
-  COMPLEX:   { model: 'claude-opus-4-0-20250115',   provider: 'anthropic', fallback: 'claude-sonnet-4-5-20250514' },
-  REASONING: { model: 'claude-opus-4-0-20250115',   provider: 'anthropic', fallback: 'claude-sonnet-4-5-20250514' },
-};
-```
-
-### 4. Configure Auth
-
-FreeRouter reads from OpenClaw's `auth-profiles.json` automatically. Your existing API keys just work.
-
-**For Anthropic with OAuth tokens** (from `openclaw configure`):
-```typescript
-// In provider.ts — the auth recipe:
-// apiKey: null (don't send X-Api-Key)
-// authToken: token (sends as Bearer)
-// System prompt MUST start with: "You are Claude Code, Anthropic's official CLI for Claude."
-// Required headers:
-//   anthropic-beta: claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14
-//   user-agent: claude-cli/2.1.2
-//   anthropic-dangerous-direct-browser-access: true
-```
-
-**For regular Anthropic API keys** (`sk-ant-api03-*`): just set as `apiKey`, no special headers needed.
-
-**For Kimi**: standard OpenAI-compatible, needs `User-Agent: KimiCLI/0.77` header.
-
-### 5. Start the Proxy
-
-```bash
-node dist/src/server.js
-# Listening on http://localhost:18800
-```
-
-### 6. Wire Into OpenClaw
-
-Add to your `openclaw.json` under `providers`:
-
-```json
-{
-  "providers": {
-    "freerouter": {
-      "baseUrl": "http://localhost:18800",
-      "api": "openai-completions",
-      "models": [
-        { "id": "auto" }
-      ]
-    }
-  }
-}
-```
-
-Set as default model in `agents.defaults`:
-
-```json
-{
-  "agents": {
-    "defaults": {
-      "model": "freerouter/auto",
-      "models": [
-        { "provider": "freerouter", "model": "auto" }
-      ]
-    }
-  }
-}
-```
-
-Restart gateway once. Done.
-
-### 7. Verify
-
-```bash
-curl http://localhost:18800/health          # {"status":"ok"}
-curl http://localhost:18800/v1/models       # lists available models
-curl http://localhost:18800/stats           # request statistics
-curl http://localhost:18800/reload          # reload auth keys without restart
-```
-
-## Thinking Parameters (Important!)
-
-FreeRouter injects the correct thinking config per Anthropic model. **Get this wrong and you'll get errors.**
-
-| Model | Thinking Config | Notes |
-|-------|----------------|-------|
-| Sonnet 4.5 | `{ type: "enabled", budget_tokens: 4096 }` | Must specify budget |
-| Opus 4.6 | `{ type: "adaptive" }` | Model decides thinking depth (Anthropic recommended) |
-| Haiku 4.5 | none | Doesn't support thinking |
-| Kimi | none | Not Anthropic |
-
-**Never use `{ type: "enabled" }` without `budget_tokens` for Sonnet** — it errors.
-**Never set a budget for `adaptive`** — it's mutually exclusive.
-
-## Proxy Architecture
-
-The proxy speaks **OpenAI format** on both ends (to OpenClaw and from Kimi), but translates to **Anthropic Messages API** for Claude models:
-
-```
-OpenClaw (OpenAI format) → FreeRouter → classify message
-  → if Kimi: forward as OpenAI /chat/completions, stream back directly
-  → if Anthropic: translate to Messages API, inject thinking, stream SSE,
-    translate back to OpenAI format
-```
-
-## Tuning Tips
-
-- **Tier boundaries** in `config.ts` — lower = more messages upgrade to higher tier
-- **Scoring weights** — increase `codeComplexity` weight if your use case is mostly coding
-- **Keywords in `rules.ts`** — add domain-specific triggers (e.g., "kubernetes" → MEDIUM minimum)
-- **Fallback order** — set based on your budget. Cheap fallbacks save money, expensive ones save quality.
-- **Context window** — default 3 messages. Increase for more context-aware routing, decrease to save classifier tokens.
-
-## Lessons Learned
-
-1. **Anthropic OAuth tokens (`sk-ant-oat01-*`) need Claude Code identity headers** — without the system prompt prefix and beta flags, auth fails
-2. **Anthropic baseUrl must NOT include `/v1`** — OpenClaw auto-appends it. Double `/v1` = 404.
-3. **Kimi model ID is `kimi-for-coding`** — not `kimi-k2` or `k2p5` (those return 400)
-4. **`openai-completions`** is the correct OpenClaw API format (not `openai-chat`)
-5. **Proxy changes don't need gateway restart** — just recompile + restart the proxy process
-6. **Gateway restart only for `openclaw.json` changes** — and never stack restarts
-
-## Cost Impact
-
-| Without FreeRouter | With FreeRouter | Savings |
-|---|---|---|
-| All Opus: ~$50/day | Mixed routing: ~$10-15/day | 60-80% |
-
-Most messages are simple (greetings, short questions, acknowledgments). Those go to Kimi at near-zero cost. Only genuinely complex work hits Opus.
+1. **User-message-only classification** - Ignores system prompt size
+2. **Quick pattern matching** - Instant tier assignment for common queries
+3. **Expanded tier boundaries** - SIMPLE tier now reachable (0.25 threshold)
+4. **OAuth token support** - Uses Claude Pro subscription
+5. **Clawdbot integration** - Reads auth from environment
 
 ---
 
-*Forked from [BlockRunAI/ClawRouter](https://github.com/BlockRunAI/ClawRouter) — same routing brain, no payment layer, your own API keys.*
+## Cost Impact
+
+| Scenario | Estimated Cost |
+|----------|----------------|
+| All Opus | ~$50/day |
+| With FreeRouter | ~$10-15/day |
+| **Savings** | **60-80%** |
+
+With OAuth token, costs are covered by your Claude Pro subscription.
+
+---
+
+## License
+
+MIT - Forked from [openfreerouter/freerouter](https://github.com/openfreerouter/freerouter)
+
+Original classifier from [BlockRunAI/ClawRouter](https://github.com/BlockRunAI/ClawRouter)
