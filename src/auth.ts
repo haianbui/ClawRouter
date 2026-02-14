@@ -1,9 +1,10 @@
 /**
- * ClawRouter Auth — loads API keys from OpenClaw auth-profiles.json
- * Zero-dep, reads from ~/.openclaw/agents/main/agent/auth-profiles.json
+ * FreeRouter Auth — loads API keys from Clawdbot config + macOS Keychain
+ * Adapted for Clawdbot's setup
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { logger } from "./logger.js";
@@ -11,55 +12,139 @@ import { logger } from "./logger.js";
 export type ProviderAuth = {
   provider: string;
   profileName: string;
-  token?: string;   // Anthropic OAuth token
-  apiKey?: string;   // API key (Kimi, OpenAI)
+  token?: string;   // Anthropic API key or OAuth token
+  apiKey?: string;   // API key (OpenAI, etc.)
 };
 
-type AuthProfilesFile = {
-  version: number;
-  profiles: Record<string, {
-    type: "token" | "api_key";
-    provider: string;
-    token?: string;
-    key?: string;
-  }>;
-  lastGood?: Record<string, string>;
+type ClawdbotConfig = {
+  auth?: {
+    profiles?: Record<string, {
+      provider: string;
+      mode: "token" | "api_key" | "oauth";
+      email?: string;
+    }>;
+  };
+  skills?: {
+    entries?: Record<string, {
+      apiKey?: string;
+    }>;
+  };
 };
 
 let authCache: Map<string, ProviderAuth> | null = null;
 
-function loadAuthProfiles(): Map<string, ProviderAuth> {
-  const filePath = join(homedir(), ".openclaw", "agents", "main", "agent", "auth-profiles.json");
+/**
+ * Read Anthropic token from macOS Keychain (Claude Code storage)
+ */
+function getAnthropicTokenFromKeychain(): string | undefined {
   try {
-    const raw = readFileSync(filePath, "utf-8");
-    const data: AuthProfilesFile = JSON.parse(raw);
-    const map = new Map<string, ProviderAuth>();
+    const result = execSync('security find-generic-password -s "Claude Code" -w 2>/dev/null', {
+      encoding: "utf-8",
+      timeout: 5000,
+    }).trim();
+    
+    if (result && result.startsWith("sk-ant-")) {
+      logger.info("Loaded Anthropic token from macOS Keychain");
+      return result;
+    }
+  } catch {
+    // Keychain access failed or not on macOS
+  }
+  return undefined;
+}
 
-    // Build a map of provider → best profile (prefer lastGood)
-    const lastGood = data.lastGood ?? {};
+/**
+ * Read Anthropic token from environment or Claude CLI files
+ */
+function getAnthropicTokenFromEnvOrFiles(): string | undefined {
+  // Environment variables
+  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
+  if (process.env.ANTHROPIC_AUTH_TOKEN) return process.env.ANTHROPIC_AUTH_TOKEN;
+  if (process.env.CLAUDE_CODE_TOKEN) return process.env.CLAUDE_CODE_TOKEN;
 
-    for (const [name, profile] of Object.entries(data.profiles)) {
-      const provider = profile.provider;
-      const existing = map.get(provider);
+  // Try reading from Claude CLI's credential files
+  const possiblePaths = [
+    join(homedir(), ".claude", "credentials.json"),
+    join(homedir(), ".config", "claude", "credentials.json"),
+  ];
 
-      // Prefer lastGood profile
-      const isLastGood = lastGood[provider] === name;
-      if (existing && !isLastGood) continue;
+  for (const path of possiblePaths) {
+    if (existsSync(path)) {
+      try {
+        const data = JSON.parse(readFileSync(path, "utf-8"));
+        if (data.token) return data.token;
+        if (data.claudeAiOauth?.accessToken) return data.claudeAiOauth.accessToken;
+      } catch {
+        // ignore
+      }
+    }
+  }
 
-      map.set(provider, {
-        provider,
-        profileName: name,
-        token: profile.type === "token" ? profile.token : undefined,
-        apiKey: profile.type === "api_key" ? profile.key : undefined,
+  return undefined;
+}
+
+function loadAuthProfiles(): Map<string, ProviderAuth> {
+  const configPath = join(homedir(), ".clawdbot", "clawdbot.json");
+  const map = new Map<string, ProviderAuth>();
+
+  // Try keychain first (most reliable on macOS)
+  const keychainToken = getAnthropicTokenFromKeychain();
+  if (keychainToken) {
+    map.set("anthropic", {
+      provider: "anthropic",
+      profileName: "keychain",
+      token: keychainToken,
+    });
+  }
+
+  // Fall back to environment/files if keychain didn't work
+  if (!map.has("anthropic")) {
+    const envToken = getAnthropicTokenFromEnvOrFiles();
+    if (envToken) {
+      map.set("anthropic", {
+        provider: "anthropic",
+        profileName: "env",
+        token: envToken,
       });
     }
-
-    logger.info(`Loaded auth for providers: ${[...map.keys()].join(", ")}`);
-    return map;
-  } catch (err) {
-    logger.error("Failed to load auth-profiles.json:", err);
-    return new Map();
   }
+
+  // Try to read Clawdbot config for OpenAI keys
+  try {
+    if (existsSync(configPath)) {
+      const raw = readFileSync(configPath, "utf-8");
+      const config: ClawdbotConfig = JSON.parse(raw);
+
+      // Check for OpenAI key in skills (openai-whisper-api or openai-image-gen)
+      if (config.skills?.entries) {
+        for (const [skillName, skillConfig] of Object.entries(config.skills.entries)) {
+          if (skillName.includes("openai") && skillConfig.apiKey) {
+            if (!map.has("openai")) {
+              map.set("openai", {
+                provider: "openai",
+                profileName: skillName,
+                apiKey: skillConfig.apiKey,
+              });
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn("Could not read Clawdbot config:", err);
+  }
+
+  // Also check OpenAI env
+  if (!map.has("openai") && process.env.OPENAI_API_KEY) {
+    map.set("openai", {
+      provider: "openai",
+      profileName: "env",
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+  }
+
+  logger.info(`Loaded auth for providers: ${[...map.keys()].join(", ") || "none"}`);
+  return map;
 }
 
 export function getAuth(provider: string): ProviderAuth | undefined {
@@ -82,7 +167,6 @@ export function getAuthHeader(provider: string): string | undefined {
   if (!auth) return undefined;
 
   if (auth.token) {
-    // Anthropic uses x-api-key header, not Authorization
     return auth.token;
   }
   if (auth.apiKey) {

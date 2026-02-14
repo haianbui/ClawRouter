@@ -122,6 +122,72 @@ function scoreAgenticTask(
   };
 }
 
+// ─── Quick Pattern Matchers (Fast Path) ───
+
+const SIMPLE_PATTERNS = [
+  // Greetings
+  /^(hi|hey|hello|yo|sup|hola|bonjour|hallo|привет|你好|こんにちは)\b/i,
+  // Basic questions
+  /^what('s| is) (your name|the weather|the time|today|up)/i,
+  /^(yes|no|ok|okay|okie|sure|thanks|thank you|thx|ty|cool|nice|got it|sounds good)\s*[.!?]?$/i,
+  // Conversational check-ins
+  /^(are you (there|here|still there|awake|around|available|online)|you (there|here|ok))\??$/i,
+  // Simple queries
+  /^(who|what|where|when|how old|how much|how many) (is|are|was|were) /i,
+  /^(define|translate|meaning of) /i,
+  // Short acknowledgments
+  /^.{1,20}$/,  // Very short messages (<=20 chars)
+];
+
+const MEDIUM_PATTERNS = [
+  /^(write|create|make|build|implement|code|debug|fix|develop|generate) (a |an |the |some )/i,
+  /\b(function|class|component|api|endpoint)\b.*\b(write|create|implement|build|code)\b/i,
+];
+
+const COMPLEX_PATTERNS = [
+  /\b(architect|design system|microservice|distributed|scalab|infrastructure)\b/i,
+  /\b(optimize|refactor|migrate|overhaul)\b/i,
+];
+
+const REASONING_PATTERNS = [
+  /\b(prove|theorem|derive|proof|formally verify|step.by.step.*reason)\b/i,
+  /\b(mathematical proof|logical derivation|chain of thought)\b/i,
+];
+
+function quickPatternMatch(userText: string): { tier: Tier; confidence: number } | null {
+  const trimmed = userText.trim();
+  
+  // Check SIMPLE first (most common for chat)
+  for (const pattern of SIMPLE_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      return { tier: "SIMPLE", confidence: 0.95 };
+    }
+  }
+  
+  // Check REASONING (rare but important)
+  for (const pattern of REASONING_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      return { tier: "REASONING", confidence: 0.90 };
+    }
+  }
+  
+  // Check COMPLEX
+  for (const pattern of COMPLEX_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      return { tier: "COMPLEX", confidence: 0.85 };
+    }
+  }
+  
+  // Check MEDIUM
+  for (const pattern of MEDIUM_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      return { tier: "MEDIUM", confidence: 0.80 };
+    }
+  }
+  
+  return null; // Fall through to weighted scoring
+}
+
 // ─── Main Classifier ───
 
 export function classifyByRules(
@@ -130,8 +196,23 @@ export function classifyByRules(
   estimatedTokens: number,
   config: ScoringConfig,
 ): ScoringResult {
-  const text = `${systemPrompt ?? ""} ${prompt}`.toLowerCase();
   const userText = prompt.toLowerCase();
+  
+  // ═══ FIX #2: Quick pattern matching on USER MESSAGE ONLY ═══
+  const quickMatch = quickPatternMatch(userText);
+  if (quickMatch) {
+    return {
+      score: 0,
+      tier: quickMatch.tier,
+      confidence: quickMatch.confidence,
+      signals: [`quick-match: ${quickMatch.tier}`],
+      agenticScore: 0,
+    };
+  }
+  
+  // ═══ FIX #1: Score based on USER MESSAGE, not system prompt ═══
+  // Only use system prompt for agentic detection, not complexity scoring
+  const text = userText; // Changed from: `${systemPrompt ?? ""} ${prompt}`.toLowerCase()
 
   const dimensions: DimensionScore[] = [
     scoreTokenCount(estimatedTokens, config.tokenCountThresholds),
@@ -228,7 +309,9 @@ export function classifyByRules(
     ),
   ];
 
-  const agenticResult = scoreAgenticTask(text, config.agenticTaskKeywords);
+  // Agentic detection still uses full text (system + user) since it's about capability
+  const fullText = `${systemPrompt ?? ""} ${prompt}`.toLowerCase();
+  const agenticResult = scoreAgenticTask(fullText, config.agenticTaskKeywords);
   dimensions.push(agenticResult.dimensionScore);
   const agenticScore = agenticResult.agenticScore;
 

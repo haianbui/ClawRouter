@@ -18,7 +18,7 @@ export const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
   version: "2.0-direct",
 
   classifier: {
-    llmModel: "kimi-coding/kimi-for-coding", // cheapest for classification fallback
+    llmModel: "anthropic/claude-3-haiku-20240307", // cheapest for classification fallback
     llmMaxTokens: 10,
     llmTemperature: 0,
     promptTruncationChars: 500,
@@ -148,10 +148,12 @@ export const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
       agenticTask: 0.04,
     },
 
+    // ═══ FIX #3: Fuzzy tier boundaries (bias toward cheaper tiers) ═══
+    // Expanded SIMPLE range, overlapping zones favor lower tier
     tierBoundaries: {
-      simpleMedium: 0.0,
-      mediumComplex: 0.03,
-      complexReasoning: 0.15,
+      simpleMedium: 0.25,      // Was 0.0 — now SIMPLE covers scores < 0.25
+      mediumComplex: 0.50,     // Was 0.03 — MEDIUM covers 0.25-0.50
+      complexReasoning: 0.75,  // Was 0.15 — COMPLEX covers 0.50-0.75, REASONING > 0.75
     },
 
     confidenceSteepness: 8,
@@ -164,40 +166,40 @@ export const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
 
   tiers: {
     SIMPLE: {
-      primary: "kimi-coding/kimi-for-coding",
-      fallback: ["anthropic/claude-haiku-4-5"],
+      primary: "anthropic/claude-3-haiku-20240307",
+      fallback: ["anthropic/claude-sonnet-4-5"],
     },
     MEDIUM: {
       primary: "anthropic/claude-sonnet-4-5",
-      fallback: ["anthropic/claude-opus-4-6"],
+      fallback: ["anthropic/claude-opus-4-5"],
     },
     COMPLEX: {
-      primary: "anthropic/claude-opus-4-6",
-      fallback: ["anthropic/claude-haiku-4-5"],
+      primary: "anthropic/claude-opus-4-5",
+      fallback: ["anthropic/claude-sonnet-4-5"],
     },
     REASONING: {
-      primary: "anthropic/claude-opus-4-6",
-      fallback: ["anthropic/claude-haiku-4-5"],
+      primary: "anthropic/claude-opus-4-5",
+      fallback: ["anthropic/claude-sonnet-4-5"],
     },
   },
 
   // Agentic tier configs — models good at multi-step autonomous tasks
   agenticTiers: {
     SIMPLE: {
-      primary: "kimi-coding/kimi-for-coding",
-      fallback: ["anthropic/claude-haiku-4-5"],
+      primary: "anthropic/claude-3-haiku-20240307",
+      fallback: ["anthropic/claude-sonnet-4-5"],
     },
     MEDIUM: {
       primary: "anthropic/claude-sonnet-4-5",
-      fallback: ["anthropic/claude-opus-4-6"],
+      fallback: ["anthropic/claude-opus-4-5"],
     },
     COMPLEX: {
-      primary: "anthropic/claude-opus-4-6",
-      fallback: ["anthropic/claude-haiku-4-5"],
+      primary: "anthropic/claude-opus-4-5",
+      fallback: ["anthropic/claude-sonnet-4-5"],
     },
     REASONING: {
-      primary: "anthropic/claude-opus-4-6",
-      fallback: ["anthropic/claude-haiku-4-5"],
+      primary: "anthropic/claude-opus-4-5",
+      fallback: ["anthropic/claude-sonnet-4-5"],
     },
   },
 

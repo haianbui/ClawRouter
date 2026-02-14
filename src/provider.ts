@@ -15,10 +15,28 @@ export type ProviderConfig = {
   headers?: Record<string, string>;
 };
 
-// OpenAI-format message
+// OpenAI-format message (including tool roles)
+export type ToolCall = {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+};
+
 export type ChatMessage = {
-  role: "system" | "user" | "assistant" | "developer";
-  content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
+  role: "system" | "user" | "assistant" | "developer" | "tool";
+  content: string | null | Array<{ type: string; text?: string; image_url?: { url: string } }>;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;  // For role: "tool" messages
+  name?: string;          // Function name for tool results
+};
+
+export type Tool = {
+  type: "function";
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+  };
 };
 
 export type ChatRequest = {
@@ -29,9 +47,11 @@ export type ChatRequest = {
   stream?: boolean;
   top_p?: number;
   stop?: string[];
+  tools?: Tool[];
+  tool_choice?: string | { type: string; function?: { name: string } };
 };
 
-// Hard-coded provider configs (from openclaw.json)
+// Provider configs for Clawdbot
 const PROVIDERS: Record<string, ProviderConfig> = {
   anthropic: {
     baseUrl: "https://api.anthropic.com",
@@ -40,12 +60,9 @@ const PROVIDERS: Record<string, ProviderConfig> = {
       "anthropic-version": "2023-06-01",
     },
   },
-  "kimi-coding": {
-    baseUrl: "https://api.kimi.com/coding/v1",
+  openai: {
+    baseUrl: "https://api.openai.com/v1",
     api: "openai-completions",
-    headers: {
-      "User-Agent": "KimiCLI/0.77",
-    },
   },
 };
 
@@ -59,10 +76,13 @@ export function parseModelId(modelId: string): { provider: string; model: string
 }
 
 /**
- * Check if a model supports adaptive thinking (Opus 4.6+)
+ * Check if a model supports adaptive thinking
+ * Note: As of early 2026, only newer models support adaptive thinking
  */
 function supportsAdaptiveThinking(modelId: string): boolean {
-  return modelId.includes("opus-4-6") || modelId.includes("opus-4.6");
+  // Currently no production models support adaptive thinking
+  // Keep this for future model support
+  return false;
 }
 
 /**
@@ -101,19 +121,73 @@ async function forwardToAnthropic(
   const config = PROVIDERS.anthropic;
 
   // Convert OpenAI messages to Anthropic format
+  // Handles: system, user, assistant (with tool_calls), and tool (results)
   let systemContent = "";
-  const messages: Array<{ role: string; content: string }> = [];
+  const messages: Array<{ role: string; content: unknown }> = [];
 
   for (const msg of req.messages) {
+    // System/developer messages go to system prompt
+    if (msg.role === "system" || msg.role === "developer") {
+      const text = typeof msg.content === "string"
+        ? msg.content
+        : (msg.content ?? []).filter(b => b.type === "text").map(b => b.text).join("\n");
+      systemContent += (systemContent ? "\n" : "") + text;
+      continue;
+    }
+
+    // Tool result messages (OpenAI role: "tool") → Anthropic tool_result
+    if (msg.role === "tool") {
+      const toolResultContent = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+      messages.push({
+        role: "user",
+        content: [{
+          type: "tool_result",
+          tool_use_id: msg.tool_call_id ?? "unknown",
+          content: toolResultContent,
+        }],
+      });
+      continue;
+    }
+
+    // Assistant messages with tool_calls → Anthropic tool_use blocks
+    if (msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
+      const contentBlocks: Array<{ type: string; id?: string; name?: string; input?: unknown; text?: string }> = [];
+      
+      // Add any text content first
+      if (msg.content) {
+        const text = typeof msg.content === "string"
+          ? msg.content
+          : msg.content.filter(b => b.type === "text").map(b => b.text).join("\n");
+        if (text) {
+          contentBlocks.push({ type: "text", text });
+        }
+      }
+      
+      // Add tool_use blocks
+      for (const tc of msg.tool_calls) {
+        let inputObj: unknown;
+        try {
+          inputObj = JSON.parse(tc.function.arguments);
+        } catch {
+          inputObj = { raw: tc.function.arguments };
+        }
+        contentBlocks.push({
+          type: "tool_use",
+          id: tc.id,
+          name: tc.function.name,
+          input: inputObj,
+        });
+      }
+      
+      messages.push({ role: "assistant", content: contentBlocks });
+      continue;
+    }
+
+    // Regular user/assistant messages
     const text = typeof msg.content === "string"
       ? msg.content
-      : msg.content.filter(b => b.type === "text").map(b => b.text).join("\n");
-
-    if (msg.role === "system" || msg.role === "developer") {
-      systemContent += (systemContent ? "\n" : "") + text;
-    } else {
-      messages.push({ role: msg.role, content: text });
-    }
+      : (msg.content ?? []).filter(b => b.type === "text").map(b => b.text).join("\n");
+    messages.push({ role: msg.role, content: text });
   }
 
   const isOAuth = auth.token!.startsWith("sk-ant-oat");
@@ -146,6 +220,15 @@ async function forwardToAnthropic(
     body.system = systemBlocks;
   } else if (systemContent) {
     body.system = systemContent;
+  }
+
+  // Convert OpenAI tools to Anthropic tools format
+  if (req.tools && req.tools.length > 0) {
+    body.tools = req.tools.map(tool => ({
+      name: tool.function.name,
+      description: tool.function.description ?? "",
+      input_schema: tool.function.parameters ?? { type: "object", properties: {} },
+    }));
   }
 
   if (thinkingConfig) {
@@ -198,7 +281,7 @@ async function forwardToAnthropic(
   if (!stream) {
     // Non-streaming: convert Anthropic response to OpenAI format
     const data = await response.json() as {
-      content: Array<{ type: string; text?: string; thinking?: string }>;
+      content: Array<{ type: string; text?: string; thinking?: string; id?: string; name?: string; input?: unknown }>;
       usage?: { input_tokens: number; output_tokens: number };
       model: string;
       stop_reason?: string;
@@ -209,6 +292,17 @@ async function forwardToAnthropic(
       .map((b: { text?: string }) => b.text ?? "")
       .join("");
 
+    // Convert tool_use blocks to OpenAI tool_calls format
+    const toolUseBlocks = data.content.filter((b: { type: string }) => b.type === "tool_use");
+    const toolCalls = toolUseBlocks.length > 0 ? toolUseBlocks.map(b => ({
+      id: b.id ?? `call_${Date.now()}`,
+      type: "function" as const,
+      function: {
+        name: b.name ?? "",
+        arguments: JSON.stringify(b.input ?? {}),
+      },
+    })) : undefined;
+
     const openaiResponse = {
       id: `chatcmpl-${Date.now()}`,
       object: "chat.completion",
@@ -216,8 +310,13 @@ async function forwardToAnthropic(
       model: `clawrouter/${modelName}`,
       choices: [{
         index: 0,
-        message: { role: "assistant", content: textContent },
-        finish_reason: data.stop_reason === "end_turn" ? "stop" : (data.stop_reason ?? "stop"),
+        message: {
+          role: "assistant",
+          content: textContent || null,
+          ...(toolCalls && { tool_calls: toolCalls }),
+        },
+        finish_reason: data.stop_reason === "tool_use" ? "tool_calls" : 
+                       data.stop_reason === "end_turn" ? "stop" : (data.stop_reason ?? "stop"),
       }],
       usage: {
         prompt_tokens: data.usage?.input_tokens ?? 0,
@@ -244,6 +343,10 @@ async function forwardToAnthropic(
   const decoder = new TextDecoder();
   let buffer = "";
   let insideThinking = false;
+  let insideToolUse = false;
+  let currentToolUse: { id: string; name: string; inputJson: string } | null = null;
+  let toolCallIndex = 0;
+  let hasToolCalls = false;
 
   try {
     while (true) {
@@ -263,22 +366,82 @@ async function forwardToAnthropic(
           const event = JSON.parse(jsonStr);
 
           if (event.type === "content_block_start") {
-            if (event.content_block?.type === "thinking") {
+            const block = event.content_block;
+            if (block?.type === "thinking") {
               insideThinking = true;
+              insideToolUse = false;
+            } else if (block?.type === "tool_use") {
+              insideThinking = false;
+              insideToolUse = true;
+              hasToolCalls = true;
+              currentToolUse = {
+                id: block.id ?? `call_${Date.now()}_${toolCallIndex}`,
+                name: block.name ?? "",
+                inputJson: "",
+              };
+              // Emit tool_call start in OpenAI format
+              const chunk = {
+                id: `chatcmpl-${Date.now()}`,
+                object: "chat.completion.chunk",
+                created: Math.floor(Date.now() / 1000),
+                model: `clawrouter/${modelName}`,
+                choices: [{
+                  index: 0,
+                  delta: {
+                    tool_calls: [{
+                      index: toolCallIndex,
+                      id: currentToolUse.id,
+                      type: "function",
+                      function: { name: currentToolUse.name, arguments: "" },
+                    }],
+                  },
+                  finish_reason: null,
+                }],
+              };
+              res.write(`data: ${JSON.stringify(chunk)}\n\n`);
             } else {
               insideThinking = false;
+              insideToolUse = false;
             }
             continue;
           }
 
           if (event.type === "content_block_stop") {
+            if (insideToolUse && currentToolUse) {
+              toolCallIndex++;
+              currentToolUse = null;
+            }
             insideThinking = false;
+            insideToolUse = false;
             continue;
           }
 
           if (event.type === "content_block_delta") {
             if (insideThinking) continue; // skip thinking deltas
 
+            // Handle tool_use input_json_delta
+            if (insideToolUse && event.delta?.partial_json !== undefined) {
+              const chunk = {
+                id: `chatcmpl-${Date.now()}`,
+                object: "chat.completion.chunk",
+                created: Math.floor(Date.now() / 1000),
+                model: `clawrouter/${modelName}`,
+                choices: [{
+                  index: 0,
+                  delta: {
+                    tool_calls: [{
+                      index: toolCallIndex,
+                      function: { arguments: event.delta.partial_json },
+                    }],
+                  },
+                  finish_reason: null,
+                }],
+              };
+              res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+              continue;
+            }
+
+            // Handle regular text delta
             const text = event.delta?.text;
             if (text) {
               const chunk = {
@@ -296,19 +459,24 @@ async function forwardToAnthropic(
             }
           }
 
-          if (event.type === "message_stop") {
-            const finalChunk = {
-              id: `chatcmpl-${Date.now()}`,
-              object: "chat.completion.chunk",
-              created: Math.floor(Date.now() / 1000),
-              model: `clawrouter/${modelName}`,
-              choices: [{
-                index: 0,
-                delta: {},
-                finish_reason: "stop",
-              }],
-            };
-            res.write(`data: ${JSON.stringify(finalChunk)}\n\n`);
+          if (event.type === "message_stop" || event.type === "message_delta") {
+            const stopReason = event.delta?.stop_reason ?? event.stop_reason;
+            if (stopReason) {
+              const finishReason = stopReason === "tool_use" ? "tool_calls" : 
+                                   stopReason === "end_turn" ? "stop" : stopReason;
+              const finalChunk = {
+                id: `chatcmpl-${Date.now()}`,
+                object: "chat.completion.chunk",
+                created: Math.floor(Date.now() / 1000),
+                model: `clawrouter/${modelName}`,
+                choices: [{
+                  index: 0,
+                  delta: {},
+                  finish_reason: finishReason,
+                }],
+              };
+              res.write(`data: ${JSON.stringify(finalChunk)}\n\n`);
+            }
           }
         } catch {
           // skip unparseable lines

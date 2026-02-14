@@ -71,7 +71,7 @@ function extractPromptForClassification(messages: ChatRequest["messages"]): {
   for (const msg of messages) {
     const text = typeof msg.content === "string"
       ? msg.content
-      : msg.content.filter(b => b.type === "text").map(b => b.text ?? "").join("\n");
+      : (msg.content ?? []).filter(b => b.type === "text").map(b => b.text ?? "").join("\n");
 
     if (msg.role === "system" || msg.role === "developer") {
       systemPrompt = (systemPrompt ? systemPrompt + "\n" : "") + text;
@@ -211,11 +211,11 @@ function handleListModels(_req: IncomingMessage, res: ServerResponse) {
       id: "auto",
       object: "model",
       created: Math.floor(Date.now() / 1000),
-      owned_by: "clawrouter",
+      owned_by: "freerouter",
       permission: [],
     },
     {
-      id: "anthropic/claude-opus-4-6",
+      id: "anthropic/claude-opus-4-5",
       object: "model",
       created: Math.floor(Date.now() / 1000),
       owned_by: "anthropic",
@@ -227,16 +227,10 @@ function handleListModels(_req: IncomingMessage, res: ServerResponse) {
       owned_by: "anthropic",
     },
     {
-      id: "anthropic/claude-haiku-4-5",
+      id: "anthropic/claude-3-haiku-20240307",
       object: "model",
       created: Math.floor(Date.now() / 1000),
       owned_by: "anthropic",
-    },
-    {
-      id: "kimi-coding/kimi-for-coding",
-      object: "model",
-      created: Math.floor(Date.now() / 1000),
-      owned_by: "kimi-coding",
     },
   ];
 
