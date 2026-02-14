@@ -34,33 +34,14 @@ type ClawdbotConfig = {
 let authCache: Map<string, ProviderAuth> | null = null;
 
 /**
- * Read Anthropic token from macOS Keychain (Claude Code storage)
- */
-function getAnthropicTokenFromKeychain(): string | undefined {
-  try {
-    const result = execSync('security find-generic-password -s "Claude Code" -w 2>/dev/null', {
-      encoding: "utf-8",
-      timeout: 5000,
-    }).trim();
-    
-    if (result && result.startsWith("sk-ant-")) {
-      logger.info("Loaded Anthropic token from macOS Keychain");
-      return result;
-    }
-  } catch {
-    // Keychain access failed or not on macOS
-  }
-  return undefined;
-}
-
-/**
  * Read Anthropic token from environment or Claude CLI files
  */
 function getAnthropicTokenFromEnvOrFiles(): string | undefined {
-  // Environment variables
+  // Environment variables - OAuth token first (Claude Pro subscription)
+  if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  if (process.env.CLAUDE_CODE_TOKEN) return process.env.CLAUDE_CODE_TOKEN;
   if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
   if (process.env.ANTHROPIC_AUTH_TOKEN) return process.env.ANTHROPIC_AUTH_TOKEN;
-  if (process.env.CLAUDE_CODE_TOKEN) return process.env.CLAUDE_CODE_TOKEN;
 
   // Try reading from Claude CLI's credential files
   const possiblePaths = [
@@ -87,26 +68,14 @@ function loadAuthProfiles(): Map<string, ProviderAuth> {
   const configPath = join(homedir(), ".clawdbot", "clawdbot.json");
   const map = new Map<string, ProviderAuth>();
 
-  // Try keychain first (most reliable on macOS)
-  const keychainToken = getAnthropicTokenFromKeychain();
-  if (keychainToken) {
+  // Fall back to environment/files if keychain didn't work
+  const envToken = getAnthropicTokenFromEnvOrFiles();
+  if (envToken) {
     map.set("anthropic", {
       provider: "anthropic",
-      profileName: "keychain",
-      token: keychainToken,
+      profileName: "env",
+      token: envToken,
     });
-  }
-
-  // Fall back to environment/files if keychain didn't work
-  if (!map.has("anthropic")) {
-    const envToken = getAnthropicTokenFromEnvOrFiles();
-    if (envToken) {
-      map.set("anthropic", {
-        provider: "anthropic",
-        profileName: "env",
-        token: envToken,
-      });
-    }
   }
 
   // Try to read Clawdbot config for OpenAI keys
