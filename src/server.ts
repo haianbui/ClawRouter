@@ -25,6 +25,13 @@ const HOST = process.env.CLAWROUTER_HOST ?? "127.0.0.1";
 // Build pricing map once at startup
 const modelPricing = buildPricingMap();
 
+// Pre-compiled regex patterns for mode override detection (performance optimization)
+const MODE_PATTERNS = {
+  slash: /^\/([a-z]+)\s+/i,
+  prefix: /^([a-z]+)\s+mode[:\s,]+/i,
+  bracket: /^\[([a-z]+)\]\s*/i,
+} as const;
+
 // Stats
 const stats = {
   started: new Date().toISOString(),
@@ -103,6 +110,73 @@ function extractPromptForClassification(messages: ChatRequest["messages"]): {
 }
 
 /**
+ * Detect user-requested mode override in prompt text.
+ * Users can prefix their prompt to force a specific tier:
+ *   "/simple hello"              → SIMPLE tier (Haiku)
+ *   "[complex] analyze this"     → COMPLEX tier (Opus)
+ *   "deep mode: prove theorem"   → REASONING tier (Opus + extended thinking)
+ *
+ * Pattern matching priority (first match wins):
+ *   1. Slash pattern: /mode ...
+ *   2. Keyword pattern: mode mode: ...
+ *   3. Bracket pattern: [mode] ...
+ *
+ * The mode prefix is stripped before forwarding to the LLM.
+ * Returns { tier, cleanedPrompt } if valid override detected, null otherwise.
+ * 
+ * Security: Rejects empty prompts after stripping prefix.
+ */
+function detectModeOverride(prompt: string): { tier: string; cleanedPrompt: string } | null {
+  const modeMap: Record<string, string> = {
+    simple: "SIMPLE",
+    basic: "SIMPLE",
+    cheap: "SIMPLE",
+    quick: "SIMPLE",
+    medium: "MEDIUM",
+    balanced: "MEDIUM",
+    complex: "COMPLEX",
+    advanced: "COMPLEX",
+    max: "REASONING",
+    reasoning: "REASONING",
+    think: "REASONING",
+    deep: "REASONING",
+  };
+
+  // Pattern 1: "/mode ..." at start of message (e.g., "/simple hello")
+  const slashMatch = prompt.match(MODE_PATTERNS.slash);
+  if (slashMatch) {
+    const mode = slashMatch[1].toLowerCase();
+    const cleanedPrompt = prompt.slice(slashMatch[0].length).trim();
+    // Reject if mode is valid but prompt is empty after stripping
+    if (modeMap[mode] && cleanedPrompt) {
+      return { tier: modeMap[mode], cleanedPrompt };
+    }
+  }
+
+  // Pattern 2: "mode mode: ..." or "mode mode, ..." at start (e.g., "deep mode: explain")
+  const prefixMatch = prompt.match(MODE_PATTERNS.prefix);
+  if (prefixMatch) {
+    const mode = prefixMatch[1].toLowerCase();
+    const cleanedPrompt = prompt.slice(prefixMatch[0].length).trim();
+    if (modeMap[mode] && cleanedPrompt) {
+      return { tier: modeMap[mode], cleanedPrompt };
+    }
+  }
+
+  // Pattern 3: "[mode]" at start (e.g., "[complex] code this")
+  const bracketMatch = prompt.match(MODE_PATTERNS.bracket);
+  if (bracketMatch) {
+    const mode = bracketMatch[1].toLowerCase();
+    const cleanedPrompt = prompt.slice(bracketMatch[0].length).trim();
+    if (modeMap[mode] && cleanedPrompt) {
+      return { tier: modeMap[mode], cleanedPrompt };
+    }
+  }
+
+  return null;
+}
+
+/**
  * Handle POST /v1/chat/completions
  */
 async function handleChatCompletions(req: IncomingMessage, res: ServerResponse) {
@@ -136,17 +210,51 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse) 
   let reasoning: string;
 
   if (requestedModel === "auto" || requestedModel === "clawrouter/auto" || requestedModel === "blockrun/auto") {
-    // Run the classifier
-    const decision = route(prompt, systemPrompt, maxTokens, {
-      config: DEFAULT_ROUTING_CONFIG,
-      modelPricing,
-    });
+    // Check for user mode override (e.g., "/max ...", "[complex] ...", "deep mode: ...")
+    const modeOverride = detectModeOverride(prompt);
 
-    routedModel = decision.model;
-    tier = decision.tier;
-    reasoning = decision.reasoning;
+    if (modeOverride) {
+      // User explicitly requested a tier — honor it
+      const tierConfig = DEFAULT_ROUTING_CONFIG.tiers[modeOverride.tier as keyof typeof DEFAULT_ROUTING_CONFIG.tiers];
+      routedModel = tierConfig?.primary ?? "anthropic/claude-opus-4-6";
+      tier = modeOverride.tier;
+      reasoning = `user-mode: ${modeOverride.tier.toLowerCase()}`;
 
-    logger.info(`[${stats.requests + 1}] Classified: tier=${tier} model=${routedModel} confidence=${decision.confidence.toFixed(2)} | ${reasoning}`);
+      // Strip the mode prefix from the last user message before forwarding to LLM
+      const lastUserMsgIndex = chatReq.messages.map(m => m.role).lastIndexOf("user");
+      if (lastUserMsgIndex >= 0) {
+        const msg = chatReq.messages[lastUserMsgIndex];
+        if (typeof msg.content === "string") {
+          msg.content = modeOverride.cleanedPrompt;
+        } else if (Array.isArray(msg.content)) {
+          // Handle multi-part content (images + text)
+          const textPart = msg.content.find((p): p is { type: "text"; text: string } => p.type === "text");
+          if (textPart) {
+            textPart.text = modeOverride.cleanedPrompt;
+          } else {
+            // No text content found - log warning but continue (image-only request with mode override)
+            logger.warn(`[${stats.requests + 1}] Mode override detected but no text content found - prefix not stripped`);
+          }
+        }
+      }
+
+      // Add override header for tracking
+      res.setHeader("X-ClawRouter-Override", "user");
+      
+      logger.info(`[${stats.requests + 1}] Mode override: tier=${tier} model=${routedModel} | ${reasoning}`);
+    } else {
+      // Run the classifier
+      const decision = route(prompt, systemPrompt, maxTokens, {
+        config: DEFAULT_ROUTING_CONFIG,
+        modelPricing,
+      });
+
+      routedModel = decision.model;
+      tier = decision.tier;
+      reasoning = decision.reasoning;
+
+      logger.info(`[${stats.requests + 1}] Classified: tier=${tier} model=${routedModel} confidence=${decision.confidence.toFixed(2)} | ${reasoning}`);
+    }
   } else {
     // Explicit model requested — pass through
     routedModel = requestedModel;
@@ -320,7 +428,7 @@ const server = createServer(handleRequest);
 server.listen(PORT, HOST, () => {
   logger.info(`🚀 ClawRouter proxy listening on http://${HOST}:${PORT}`);
   logger.info(`   POST /v1/chat/completions  — route & forward`);
-  logger.info(`   GET  /v1/models            — list models`);
+  logger.info(`   GET  /v1/models            — list available models`);
   logger.info(`   GET  /health               — health check`);
   logger.info(`   GET  /stats                — request statistics`);
   logger.info(`   POST /reload               — reload auth keys`);
