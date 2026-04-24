@@ -77,12 +77,11 @@ export function parseModelId(modelId: string): { provider: string; model: string
 
 /**
  * Check if a model supports adaptive thinking
- * Note: As of early 2026, only newer models support adaptive thinking
+ * ONLY Opus 4.6+ supports adaptive thinking
+ * Opus 4.5 uses manual extended thinking with fixed budget instead
  */
 function supportsAdaptiveThinking(modelId: string): boolean {
-  // Currently no production models support adaptive thinking
-  // Keep this for future model support
-  return false;
+  return modelId.includes("opus-4-6");  // Only claude-opus-4-6 or newer
 }
 
 /**

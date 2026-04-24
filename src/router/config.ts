@@ -148,12 +148,31 @@ export const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
       agenticTask: 0.04,
     },
 
-    // ═══ FIX #3: Fuzzy tier boundaries (bias toward cheaper tiers) ═══
-    // Expanded SIMPLE range, overlapping zones favor lower tier
+    // ═══ BALANCED: Quality first, enable Adaptive Thinking for Opus 4.6 ═══
     tierBoundaries: {
-      simpleMedium: 0.25,      // Was 0.0 — now SIMPLE covers scores < 0.25
-      mediumComplex: 0.50,     // Was 0.03 — MEDIUM covers 0.25-0.50
-      complexReasoning: 0.75,  // Was 0.15 — COMPLEX covers 0.50-0.75, REASONING > 0.75
+      simpleMedium: 0.15,     // Simple Q&A → Haiku
+      mediumComplex: 0.35,    // Code/general → Sonnet 
+      complexReasoning: 0.50,  // Architecture/deep → Opus 4.6 (adaptive)
+    },
+
+    // ═══ TIER → MODEL MAPPING ═══
+    tiers: {
+      SIMPLE: {
+        primary: "anthropic/claude-3-haiku-20240307",
+        fallback: ["anthropic/claude-sonnet-4-5"],
+      },
+      MEDIUM: {
+        primary: "anthropic/claude-sonnet-4-5",
+        fallback: ["anthropic/claude-opus-4-6"],
+      },
+      COMPLEX: {
+        primary: "anthropic/claude-opus-4-6",
+        fallback: ["anthropic/claude-sonnet-4-5"],
+      },
+      REASONING: {
+        primary: "anthropic/claude-opus-4-6",
+        fallback: ["anthropic/claude-sonnet-4-5"],
+      },
     },
 
     confidenceSteepness: 8,
@@ -171,14 +190,14 @@ export const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
     },
     MEDIUM: {
       primary: "anthropic/claude-sonnet-4-5",
-      fallback: ["anthropic/claude-opus-4-5"],
+      fallback: ["anthropic/claude-opus-4-6"],
     },
     COMPLEX: {
-      primary: "anthropic/claude-opus-4-5",
+      primary: "anthropic/claude-opus-4-6",
       fallback: ["anthropic/claude-sonnet-4-5"],
     },
     REASONING: {
-      primary: "anthropic/claude-opus-4-5",
+      primary: "anthropic/claude-opus-4-6",
       fallback: ["anthropic/claude-sonnet-4-5"],
     },
   },
@@ -191,14 +210,14 @@ export const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
     },
     MEDIUM: {
       primary: "anthropic/claude-sonnet-4-5",
-      fallback: ["anthropic/claude-opus-4-5"],
+      fallback: ["anthropic/claude-opus-4-6"],
     },
     COMPLEX: {
-      primary: "anthropic/claude-opus-4-5",
+      primary: "anthropic/claude-opus-4-6",
       fallback: ["anthropic/claude-sonnet-4-5"],
     },
     REASONING: {
-      primary: "anthropic/claude-opus-4-5",
+      primary: "anthropic/claude-opus-4-6",
       fallback: ["anthropic/claude-sonnet-4-5"],
     },
   },
@@ -206,7 +225,7 @@ export const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
   overrides: {
     maxTokensForceComplex: 100_000,
     structuredOutputMinTier: "MEDIUM",
-    ambiguousDefaultTier: "MEDIUM",
+    ambiguousDefaultTier: "COMPLEX",  // Quality first: when unsure, use Opus
     agenticMode: false,
   },
 };

@@ -135,14 +135,13 @@ const SIMPLE_PATTERNS = [
   // Simple queries
   /^(who|what|where|when|how old|how much|how many) (is|are|was|were) /i,
   /^(define|translate|meaning of) /i,
-  // Short acknowledgments
-  /^.{1,20}$/,  // Very short messages (<=20 chars)
+  // Short acknowledgments - be conservative
+  /^.{1,10}$/,  // Only very short messages (<=10 chars)
 ];
 
-const MEDIUM_PATTERNS = [
-  /^(write|create|make|build|implement|code|debug|fix|develop|generate) (a |an |the |some )/i,
-  /\b(function|class|component|api|endpoint)\b.*\b(write|create|implement|build|code)\b/i,
-];
+// ═══ QUALITY FIRST: No MEDIUM quick-patterns ═══
+// Force proper scoring for non-trivial queries
+const MEDIUM_PATTERNS: RegExp[] = [];
 
 const COMPLEX_PATTERNS = [
   /\b(architect|design system|microservice|distributed|scalab|infrastructure)\b/i,
